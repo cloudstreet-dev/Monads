@@ -292,13 +292,17 @@ class IO<T> {
   }
 
   // Retry on failure
+  // Note: This is still pure! We're returning a new IO that *describes*
+  // the retry logic. The effects only execute when unsafeRun() is called.
   retry(times: number): IO<T> {
     return new IO(() => {
+      let lastError: any;
       for (let i = 0; i < times; i++) {
         try {
           return this.effect();
         } catch (e) {
-          if (i === times - 1) throw e;
+          lastError = e;
+          if (i === times - 1) throw lastError;
         }
       }
       throw new Error("Unreachable");
@@ -493,6 +497,36 @@ const program: IO<void> = writeLine("Calculator v1.0")
 // Execute once
 program.unsafeRun();
 ```
+
+**Note on the calculator example:** Yes, this gets deeply nested and hard to follow! This is exactly why languages like Haskell have do-notation, Scala has for-comprehensions, and F# has computation expressions. In real code, you'd write this with syntactic sugar (covered in Chapter 15). For example, in Haskell:
+
+```haskell
+calculatorLoop :: IO ()
+calculatorLoop = do
+  putStrLn "Enter command (add/multiply/quit):"
+  input <- getLine
+  case parseCommand input of
+    Nothing -> do
+      putStrLn "Invalid command"
+      calculatorLoop
+    Just Quit -> putStrLn "Goodbye!"
+    Just cmd -> do
+      putStrLn "Enter first number:"
+      maybeA <- readNumber
+      case maybeA of
+        Nothing -> putStrLn "Invalid number" >> calculatorLoop
+        Just a -> do
+          putStrLn "Enter second number:"
+          maybeB <- readNumber
+          case maybeB of
+            Nothing -> putStrLn "Invalid number" >> calculatorLoop
+            Just b -> do
+              let result = calculate cmd a b
+              putStrLn $ "Result: " ++ show result
+              calculatorLoop
+```
+
+Much more readable! The nested flatMap chains illustrate the mechanics, but real IO code uses do-notation.
 
 ## Testing with IO
 
