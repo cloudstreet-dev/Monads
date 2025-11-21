@@ -215,14 +215,20 @@ function getUserPost(userId) {
 
 `await` = `<-` in Haskell = `let!` in F# = `<-` in Scala's for.
 
+**Important observation**: JavaScript specialized do-notation for one monad (Promise). This is why JavaScript doesn't have general do-notation like Haskell - `async/await` only works with Promises. Languages like Haskell, Scala, and F# provide do-notation for *all* monads, not just one specific type. This is more flexible but requires more language support.
+
 ## The Pattern
 
-All do-notations share the same structure:
+All do-notations share the same structure. Here's a side-by-side comparison:
 
-1. **Bind monadic values**: `<-`, `let!`, `await`
-2. **Let pure values**: `let`
-3. **Guard/filter**: `guard`, `if`, early return
-4. **Return final value**: `return`, `yield`, implicit return
+| Operation | Haskell | Scala | F# | JavaScript |
+|-----------|---------|-------|-----|------------|
+| **Bind monadic value** | `x <- action` | `x <- action` | `let! x = action` | `const x = await action` |
+| **Let pure value** | `let y = expr` | `val y = expr` | `let y = expr` | `const y = expr` |
+| **Guard/filter** | `guard condition` | `if condition` | `do! guard condition` | `if (!condition) throw/return` |
+| **Return final value** | `return x` | `yield x` | `return x` | `return x` |
+
+Despite different syntax, the structure is identical across all languages.
 
 ## Desugaring Rules
 
@@ -295,10 +301,14 @@ action1 >>= \case
 
 ## Implementing Do-Notation in TypeScript
 
-TypeScript doesn't have do-notation, but we can get close with generators:
+TypeScript doesn't have built-in do-notation, but we can hack something similar using generators:
 
 ```typescript
 // Helper to run generator as monadic do-notation
+// How it works:
+// 1. yield* passes monadic values to the generator
+// 2. We extract those values and pass them through flatMap
+// 3. The result of flatMap is fed back into the generator via next()
 function Do<M>(generator: () => Generator<M, any, any>): M {
   const gen = generator();
   let result = gen.next();
@@ -310,7 +320,7 @@ function Do<M>(generator: () => Generator<M, any, any>): M {
 
     const monad = result.value;
     return monad.flatMap((val: any) => {
-      result = gen.next(val);
+      result = gen.next(val);  // Feed unwrapped value back to generator
       return step(val);
     });
   }
@@ -333,7 +343,14 @@ const getUserPost = (userId: string) => Do(function* () {
 });
 ```
 
-This is a bit clunky, but it works! Some libraries like `fp-ts` provide this pattern.
+**Important caveats about this approach:**
+- TypeScript's type system doesn't fully understand this pattern - you lose type safety
+- The `any` types are necessary because generators weren't designed for this
+- It's a clever hack, not a first-class language feature
+- Libraries like `fp-ts` provide better-typed versions using generator comprehensions
+- For production code, consider using a library's implementation rather than rolling your own
+
+This demonstrates the concept, but JavaScript's lack of general do-notation is a real limitation compared to Haskell or Scala.
 
 ## Real Example: Database Transaction
 
@@ -590,7 +607,7 @@ async function loadPage(userId) {
 
 ## When Not to Use Do-Notation
 
-Do-notation can make code *too* imperative-looking:
+Do-notation can make code *too* imperative-looking, hiding opportunities for better abstractions:
 
 ```haskell
 -- Bad: too imperative, hiding the monad
@@ -603,17 +620,42 @@ badFunction = do
   let c = h z
   return (a + b + c)
 
--- Better: use Applicative
+-- Better: use Applicative (from Chapter 13/19)
 betterFunction =
   (+) <$> fmap f getX
       <*> fmap g getY
       <*> fmap h getZ
 
--- Or
+-- Or with liftA3
 betterFunction = liftA3 (\x y z -> f x + g y + h z) getX getY getZ
 ```
 
-If operations are independent, Applicative is clearer (and can be parallel!).
+**Why Applicative is better here:**
+- The operations (`getX`, `getY`, `getZ`) are *independent* - none depends on the result of another
+- With do-notation, they must run sequentially
+- With Applicative, they can potentially run in parallel
+- The type clearly shows independence: `Applicative` vs `Monad`
+
+**Rule of thumb:**
+- Use **do-notation** when operations are sequential and dependent
+- Use **Applicative** when operations are independent (see Chapter 13 on Validation for another example)
+
+For instance, form validation should use Applicative to collect all errors:
+
+```haskell
+-- Good: Applicative for independent validations
+validateUser = User
+  <$> validateName name
+  <*> validateEmail email
+  <*> validateAge age
+
+-- Bad: Monad/do stops at first error
+validateUser = do
+  validName <- validateName name      -- If this fails,
+  validEmail <- validateEmail email   -- these never run
+  validAge <- validateAge age
+  return $ User validName validEmail validAge
+```
 
 ## What We've Learned
 
@@ -627,8 +669,8 @@ If operations are independent, Applicative is clearer (and can be parallel!).
 
 ## Coming Up
 
-We've covered the core concepts, seen practical examples, and learned the syntax. Let's wrap up with where to go from here and how monads fit into the bigger picture.
+Do-notation makes monadic code readable, but knowing when to use it is just as important as knowing how. Next, we'll explore practical patterns and antipatterns - when to reach for monads, when simpler abstractions suffice, and common mistakes to avoid.
 
 ---
 
-**Next: [Chapter 20 - Conclusion: You Get It Now](20-conclusion.md)**
+**Next: [Chapter 16 - Common Patterns and Antipatterns](16-patterns.md)**
