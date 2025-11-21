@@ -175,6 +175,8 @@ class Remote<E, T> {
     if (this.state.type === 'Success') {
       return Remote.success(fn(this.state.data));
     }
+    // TypeScript limitation: we need to cast here because the type system
+    // doesn't track that non-Success states are valid for Remote<E, U>
     return new Remote(this.state as any);
   }
 
@@ -182,6 +184,8 @@ class Remote<E, T> {
     if (this.state.type === 'Success') {
       return fn(this.state.data);
     }
+    // TypeScript limitation: we need to cast here because the type system
+    // doesn't track that non-Success states are valid for Remote<E, U>
     return new Remote(this.state as any);
   }
 
@@ -213,18 +217,17 @@ class Remote<E, T> {
     return this.state.type === 'Failure';
   }
 
-  // Load from a promise
-  static fromPromise<E, T>(
+  // Load from a promise (returns a function that updates state)
+  static async fromPromise<E, T>(
     promise: Promise<T>,
     onError: (error: any) => E
-  ): Remote<E, T> {
-    let remote = Remote.loading<E, T>();
-
-    promise
-      .then(data => remote = Remote.success(data))
-      .catch(error => remote = Remote.failure(onError(error)));
-
-    return remote;
+  ): Promise<Remote<E, T>> {
+    try {
+      const data = await promise;
+      return Remote.success(data);
+    } catch (error) {
+      return Remote.failure(onError(error));
+    }
   }
 }
 
@@ -249,7 +252,7 @@ function UserProfile({ userId }: { userId: string }) {
 }
 
 // Compose remote data operations
-function loadUserPosts(userId: string): Remote<Error, Post[]> {
+async function loadUserPosts(userId: string): Promise<Remote<Error, Post[]>> {
   return Remote.fromPromise(
     fetchUser(userId).then(user =>
       fetchPosts(user.id)
@@ -499,6 +502,35 @@ function letter(): Parser<string> {
   });
 }
 
+function whitespace(): Parser<string> {
+  return new Parser(input => {
+    const match = input.match(/^\s+/);
+    if (match) {
+      return {
+        success: true,
+        value: match[0],
+        remaining: input.slice(match[0].length)
+      };
+    }
+    return {
+      success: false,
+      error: 'Expected whitespace'
+    };
+  });
+}
+
+// Optional whitespace
+function optionalWhitespace(): Parser<string> {
+  return new Parser(input => {
+    const match = input.match(/^\s*/);
+    return {
+      success: true,
+      value: match ? match[0] : '',
+      remaining: input.slice(match ? match[0].length : 0)
+    };
+  });
+}
+
 // Compose parsers
 function number(): Parser<number> {
   return digit().many().map(digits =>
@@ -518,26 +550,37 @@ function identifier(): Parser<string> {
   );
 }
 
-// Parse expressions: "x + 5"
+// Parse expressions with whitespace: "x + 5" or "x+5"
 function expression(): Parser<{ left: string; op: string; right: number }> {
   return identifier()
-    .flatMap(left => char('+')
-      .flatMap(() => number()
-        .map(right => ({ left, op: '+', right }))
+    .flatMap(left => optionalWhitespace()
+      .flatMap(() => char('+')
+        .flatMap(() => optionalWhitespace()
+          .flatMap(() => number()
+            .map(right => ({ left, op: '+', right }))
+          )
+        )
       )
     );
 }
 
 // Usage
-const result = expression().run('x+42');
-if (result.success) {
-  console.log(result.value);  // { left: 'x', op: '+', right: 42 }
+const result1 = expression().run('x+42');
+if (result1.success) {
+  console.log(result1.value);  // { left: 'x', op: '+', right: 42 }
+}
+
+const result2 = expression().run('x + 42');
+if (result2.success) {
+  console.log(result2.value);  // { left: 'x', op: '+', right: 42 }
 }
 ```
 
 ## Example 5: Probability Monad
 
 Represent probabilistic computations:
+
+**Note:** This implementation works for discrete distributions with finite outcomes (like dice, coin flips, card draws). Continuous distributions (like normal, exponential) would require a different approach using probability density functions or sampling methods.
 
 ```typescript
 type Probability = number;  // 0 to 1
