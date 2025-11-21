@@ -12,6 +12,9 @@ You'll learn monads through working code in the languages where they shine:
 - **Rust** - Where monads solve real-world safety
 - **TypeScript** - Where monads bring sanity to JavaScript
 - **F#** - Where monads feel natural on .NET
+- **Kotlin** - Where monads power Android with Arrow
+- **Swift** - Where monads meet iOS with Result and Combine
+- **Java** - Where monads arrive via Optional and Vavr
 
 ## Who This Book Is For
 
@@ -121,24 +124,17 @@ By the end of this book:
 
 19. **[Beyond Monads](19-beyond.md)**
     - Functors, Applicatives, and the family tree
+    - Alternative, Comonad, and other abstractions
     - When simpler abstractions suffice
-    - The bigger picture
 
 20. **[Conclusion: You Get It Now](20-conclusion.md)**
     - What you've learned
     - Where to go from here
     - The monad conspiracy revealed
 
-## Appendices
-
-- **[A: Quick Reference](appendix-a-reference.md)** - Monad cheatsheet by language
-- **[B: Further Reading](appendix-b-reading.md)** - Books, papers, and resources
-- **[C: Category Theory Lite](appendix-c-category-theory.md)** - For the curious
-- **[D: Setup Guides](appendix-d-setup.md)** - Getting your environment ready
-
 ## Code Examples
 
-All code examples are runnable and available in the `/examples` directory, organized by language and chapter.
+Code examples throughout the book are designed to be runnable in their respective languages.
 
 ## Contributing
 
