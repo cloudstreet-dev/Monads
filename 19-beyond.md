@@ -96,6 +96,13 @@ interface Applicative<T> extends Functor<T> {
 }
 ```
 
+**Note on `ap` conventions:** Different libraries use different argument orders for `ap`:
+- This book uses: `value.ap(wrappedFunction)` - the value calls `ap` with the function
+- Some libraries use: `wrappedFunction.ap(value)` - the function calls `ap` with the value
+- Haskell uses: `wrappedFunction <*> value` (infix operator)
+
+Both are equivalent, just different styles. Check your library's documentation to see which convention it follows.
+
 ### Why Applicative?
 
 ```typescript
@@ -333,8 +340,11 @@ class Tree<T> implements Foldable<T> {
   ) {}
 
   reduce<U>(fn: (acc: U, value: T) => U, initial: U): U {
-    let acc = fn(initial, this.value);
-    if (this.left) acc = this.left.reduce(fn, acc);
+    // Process left subtree first
+    let acc = this.left ? this.left.reduce(fn, initial) : initial;
+    // Process current node
+    acc = fn(acc, this.value);
+    // Process right subtree
     if (this.right) acc = this.right.reduce(fn, acc);
     return acc;
   }
@@ -343,10 +353,18 @@ class Tree<T> implements Foldable<T> {
 
 ### Traversable: Foldable + Functor
 
-Combine mapping and folding:
+Traversable combines mapping with effects. The key insight: **flip the nesting of types**.
+
+**The problem:** You have `List<Maybe<T>>` but want `Maybe<List<T>>`. Traversable does this flip.
+
+**Two operations:**
+- `sequence`: Flip the nesting - `F<G<T>>` becomes `G<F<T>>`
+- `traverse`: Map then flip - combines `map` and `sequence`
 
 ```typescript
-// Turn List<Maybe<T>> into Maybe<List<T>>
+// sequence: Turn List<Maybe<T>> into Maybe<List<T>>
+// If any Maybe is None, result is None
+// If all are Some, result is Some with the list
 function sequence<T>(list: Maybe<T>[]): Maybe<T[]> {
   const result: T[] = [];
 
@@ -358,19 +376,62 @@ function sequence<T>(list: Maybe<T>[]): Maybe<T[]> {
   return Maybe.of(result);
 }
 
-// Map and sequence in one step
+// Examples of sequence
+sequence([Maybe.of(1), Maybe.of(2), Maybe.of(3)]);
+// Maybe.of([1, 2, 3]) - all present, so Some
+
+sequence([Maybe.of(1), Maybe.none(), Maybe.of(3)]);
+// Maybe.none() - one missing, so None
+
+// traverse: Map and sequence in one step
+// More efficient than mapping then sequencing separately
 function traverse<T, U>(
   list: T[],
   fn: (value: T) => Maybe<U>
 ): Maybe<U[]> {
-  return sequence(list.map(fn));
+  const result: U[] = [];
+
+  for (const item of list) {
+    const maybe = fn(item);
+    if (maybe.isNone()) return Maybe.none();
+    result.push(maybe.getValue());
+  }
+
+  return Maybe.of(result);
+}
+
+// Usage: fetch multiple users
+const userIds = ['1', '2', '3'];
+const maybeUsers: Maybe<User[]> = traverse(userIds, findUser);
+// Maybe<User[]> - Some only if all users found
+
+// Real-world example: validate a list
+function validateAll<T>(
+  items: T[],
+  validate: (item: T) => Either<Error, T>
+): Either<Error, T[]> {
+  const result: T[] = [];
+
+  for (const item of items) {
+    const validated = validate(item);
+    if (validated.isLeft()) return validated as any;
+    result.push(validated.getValue());
+  }
+
+  return Either.right(result);
 }
 
 // Usage
-const users = ['1', '2', '3'];
-const maybeUsers = traverse(users, findUser);
-// Maybe<User[]> - Some only if all users found
+const emails = ['a@example.com', 'invalid', 'b@example.com'];
+const validated = validateAll(emails, validateEmail);
+// Left("Invalid email") - stops at first error
 ```
+
+**Why useful:**
+- Fetch multiple items, fail if any fails
+- Validate a list, collect all valid or stop at first error
+- Perform effects on a collection, propagate failure
+- "Turn inside-out" nested types
 
 ## The Family Tree
 
@@ -382,8 +443,10 @@ const maybeUsers = traverse(users, findUser);
         Functor ──→ Foldable
             ↓           ↓
       Applicative   Traversable
-            ↓
-          Monad
+         ↓    ↓
+    Alternative  Monad
+                  ↕
+               Comonad (dual)
 ```
 
 Each adds capabilities:
@@ -391,9 +454,103 @@ Each adds capabilities:
 - **Monoid**: `concat` + `empty`
 - **Functor**: `map`
 - **Applicative**: `map` + `ap` (parallel composition)
+- **Alternative**: `ap` + `orElse`/`empty` (choice and failure)
 - **Monad**: `map` + `flatMap` (sequential composition)
 - **Foldable**: `reduce`
 - **Traversable**: `map` + `reduce` + effects
+- **Comonad**: `extract` + `extend` (dual of Monad, for context-dependent computation)
+
+### Alternative: Choice and Failure
+
+Alternative adds the ability to choose between options or handle failure:
+
+```typescript
+interface Alternative<T> extends Applicative<T> {
+  // Empty value (represents failure/no choice)
+  static empty<U>(): Alternative<U>;
+
+  // Choose between two alternatives
+  orElse(other: Alternative<T>): Alternative<T>;
+}
+
+// Maybe with Alternative
+Maybe.none()
+  .orElse(Maybe.of(5))
+  .orElse(Maybe.of(10));
+// Some(5) - first success wins
+
+// Try multiple parsers
+parseNumber(input)
+  .orElse(parseString(input))
+  .orElse(parseBoolean(input));
+// First successful parse wins
+
+// List as Alternative (concatenation)
+[1, 2].orElse([3, 4]);  // [1, 2, 3, 4]
+```
+
+**In Haskell:** The `<|>` operator represents "choice" - try the left side, if it fails, try the right.
+
+```haskell
+-- Try to find a user, fallback to default
+findUser id <|> pure defaultUser
+
+-- Parse alternatives
+parseJson input <|> parseXml input <|> parseYaml input
+```
+
+### Comonad: The Dual of Monad
+
+Comonad is the categorical dual of Monad. While monads let you put values *into* a context, comonads let you *extract* values from a context and extend computations that depend on context.
+
+```typescript
+interface Comonad<T> {
+  // Extract the value (dual of 'of')
+  extract(): T;
+
+  // Extend a context-dependent computation (dual of 'flatMap')
+  extend<U>(fn: (wa: Comonad<T>) => U): Comonad<U>;
+}
+```
+
+**Example: Store Comonad** (value with context)
+```typescript
+// Store represents a value with a "cursor" position
+class Store<T> {
+  constructor(
+    private position: number,
+    private lookup: (pos: number) => T
+  ) {}
+
+  // Extract current value
+  extract(): T {
+    return this.lookup(this.position);
+  }
+
+  // Extend: compute new values based on whole context
+  extend<U>(fn: (store: Store<T>) => U): Store<U> {
+    return new Store(
+      this.position,
+      (pos) => fn(new Store(pos, this.lookup))
+    );
+  }
+}
+
+// Example: Game of Life
+// Each cell's next state depends on its neighborhood (context)
+const grid = new Store(0, cellAtPosition);
+const nextGen = grid.extend(cell =>
+  countNeighbors(cell) === 3 ? alive : dead
+);
+```
+
+**Where comonads appear:**
+- Image processing (pixel + neighborhood)
+- Cellular automata (cell + surrounding cells)
+- Streaming data with history
+- Zippers (data structure with focus)
+
+**Note:** Comonads are less common than monads in everyday programming. Most developers never need them. They're mentioned here for completeness and for the curious reader exploring the deeper category theory.
 
 ## When to Use What
 
