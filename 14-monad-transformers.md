@@ -239,17 +239,13 @@ class EitherT<M, E, A> {
 ```typescript
 type DbError = { type: 'NotFound' | 'QueryError' | 'ConnectionError'; message: string };
 
-// Database operations return EitherT<IO, DbError, A>
-function findUser(id: string): EitherT<IO, DbError, User> {
+// Type alias makes signatures much more readable
+type DbIO<A> = EitherT<IO, DbError, A>;
+
+// Database operations return DbIO<A>
+function findUser(id: string): DbIO<User> {
   return EitherT.lift(
-    new IO(() => {
-      try {
-        const user = database.query('SELECT * FROM users WHERE id = ?', [id])[0];
-        return user;
-      } catch (e) {
-        throw e;
-      }
-    }),
+    new IO(() => database.query('SELECT * FROM users WHERE id = ?', [id])[0]),
     IOMonad
   ).flatMap(
     user => user
@@ -259,27 +255,17 @@ function findUser(id: string): EitherT<IO, DbError, User> {
   );
 }
 
-function findPosts(userId: string): EitherT<IO, DbError, Post[]> {
+function findPosts(userId: string): DbIO<Post[]> {
   return EitherT.lift(
-    new IO(() => {
-      try {
-        return database.query('SELECT * FROM posts WHERE user_id = ?', [userId]);
-      } catch (e) {
-        throw e;
-      }
-    }),
+    new IO(() => database.query('SELECT * FROM posts WHERE user_id = ?', [userId])),
     IOMonad
   );
 }
 
-function updatePostCount(userId: string, count: number): EitherT<IO, DbError, void> {
+function updatePostCount(userId: string, count: number): DbIO<void> {
   return EitherT.lift(
     new IO(() => {
-      try {
-        database.query('UPDATE users SET post_count = ? WHERE id = ?', [count, userId]);
-      } catch (e) {
-        throw e;
-      }
+      database.query('UPDATE users SET post_count = ? WHERE id = ?', [count, userId]);
     }),
     IOMonad
   );
@@ -445,73 +431,169 @@ class StateT<S, M, A> {
 }
 ```
 
-## Practical Pattern: The MTL Stack
+### Example: Stateful Logging with IO
 
-In real applications, you often stack multiple transformers:
+Combining state (for a counter) with IO (for side effects):
 
 ```typescript
-// App monad: ReaderT<Config, EitherT<IO, Error, A>>
-// = Config => IO<Either<Error, A>>
+// Type alias for clarity
+type CounterIO<A> = StateT<number, IO, A>;
 
-type AppM<A> = ReaderT<AppConfig, EitherT<IO, AppError, A>>;
+// Stateful operations that also do IO
+function logWithCount(message: string): CounterIO<void> {
+  return StateT.get<number, IO>(IOMonad).flatMap(count =>
+    StateT.lift(
+      new IO(() => console.log(`[${count}] ${message}`)),
+      IOMonad
+    ).flatMap(() =>
+      StateT.put(count + 1, IOMonad),
+      IOMonad
+    ),
+    IOMonad
+  );
+}
 
+function getUserWithLogging(id: string): CounterIO<User> {
+  return logWithCount(`Fetching user ${id}`)
+    .flatMap(() =>
+      StateT.lift(
+        new IO(() => database.findUser(id)),
+        IOMonad
+      ),
+      IOMonad
+    )
+    .flatMap(user => {
+      return logWithCount(`Found user: ${user.name}`)
+        .map(() => user, IOMonad);
+    }, IOMonad);
+}
+
+// Compose stateful IO operations
+const program = logWithCount("Starting program")
+  .flatMap(() => getUserWithLogging("123"), IOMonad)
+  .flatMap(user => logWithCount(`Processing user ${user.name}`), IOMonad);
+
+// Run with initial state
+const result = program.run(0).unsafeRun();
+// Console output:
+// [0] Starting program
+// [1] Fetching user 123
+// [2] Found user: Alice
+// [3] Processing user Alice
+
+// result = [undefined, 4] - final value and final counter
+```
+
+This combines:
+- **State**: Automatic counter incrementing
+- **IO**: Actual console logging
+- **Clean composition**: No manual state threading
+
+## Practical Pattern: The MTL Stack
+
+In real applications, you often stack multiple transformers. Let's build this step by step.
+
+### Step 1: Define the Error Type
+
+```typescript
 type AppError =
   | { type: 'DatabaseError'; message: string }
   | { type: 'EmailError'; message: string }
   | { type: 'ValidationError'; errors: string[] };
+```
 
-// Helper to create AppM computations
-class App {
-  static of<A>(value: A): AppM<A> {
-    return ReaderT.of(
-      value,
-      EitherTMonad<IO, AppError>(IOMonad)
-    );
+### Step 2: Build the Stack with Type Aliases
+
+```typescript
+// Start with IO at the base
+// Add error handling: EitherT<IO, AppError, A>
+type IOWithErrors<A> = EitherT<IO, AppError, A>;
+
+// Add configuration: ReaderT<Config, IOWithErrors, A>
+type App<A> = ReaderT<AppConfig, IOWithErrors, A>;
+
+// This is equivalent to:
+// App<A> = ReaderT<AppConfig, EitherT<IO, AppError, A>>
+// Which desugars to: Config => IO<Either<AppError, A>>
+```
+
+### Step 3: Create Helper Functions
+
+Rather than working with the raw stack, create helpers:
+
+```typescript
+class AppHelpers {
+  // Wrap a pure value
+  static pure<A>(value: A): App<A> {
+    const eitherMonad = /* EitherT monad instance */;
+    return ReaderT.of(value, eitherMonad);
   }
 
-  static config(): AppM<AppConfig> {
-    return ReaderT.ask(EitherTMonad<IO, AppError>(IOMonad));
+  // Get the config
+  static getConfig(): App<AppConfig> {
+    const eitherMonad = /* EitherT monad instance */;
+    return ReaderT.ask(eitherMonad);
   }
 
-  static error<A>(error: AppError): AppM<A> {
-    return ReaderT.lift(
-      EitherT.left(error, IOMonad)
-    );
+  // Perform IO
+  static io<A>(effect: IO<A>): App<A> {
+    const lifted = EitherT.lift(effect, IOMonad);
+    return ReaderT.lift(lifted);
   }
 
-  static liftIO<A>(io: IO<A>): AppM<A> {
-    return ReaderT.lift(
-      EitherT.lift(io, IOMonad)
-    );
+  // Fail with an error
+  static fail<A>(error: AppError): App<A> {
+    const failed = EitherT.left<IO, AppError, A>(error, IOMonad);
+    return ReaderT.lift(failed);
   }
 }
+```
 
-// Business logic using AppM
-function createUser(name: string, email: string): AppM<User> {
-  return App.config().flatMap(
-    config =>
-      App.liftIO(
-        new IO(() => database.insert({ name, email }))
-      ).flatMap(
-        user =>
-          App.liftIO(
-            new IO(() => emailService.sendWelcome(email))
-          ).map(() => user, EitherTMonad(IOMonad)),
-        EitherTMonad(IOMonad)
-      ),
-    EitherTMonad(IOMonad)
+### Step 4: Write Business Logic
+
+Now the code is much clearer:
+
+```typescript
+function saveUser(user: User): App<User> {
+  return AppHelpers.io(new IO(() => database.save(user)));
+}
+
+function sendWelcomeEmail(user: User): App<void> {
+  return AppHelpers.io(new IO(() => emailService.send(user.email, "Welcome!")));
+}
+
+// Compose operations - this reads much better!
+function registerUser(name: string, email: string): App<User> {
+  const user = { name, email };
+
+  return saveUser(user).flatMap(savedUser =>
+    sendWelcomeEmail(savedUser).map(() =>
+      savedUser
+    )
   );
 }
-
-// Run the entire stack
-const config: AppConfig = loadConfig();
-const result = createUser("Alice", "alice@example.com")
-  .run(config)           // ReaderT layer
-  .run()                 // EitherT layer
-  .unsafeRun();          // IO layer
-
-// Type: Either<AppError, User>
 ```
+
+### Step 5: Run the Stack
+
+```typescript
+const config: AppConfig = loadConfig();
+const program = registerUser("Alice", "alice@example.com");
+
+// Unwrap each layer
+const result = program
+  .run(config)      // ReaderT layer -> EitherT<IO, AppError, User>
+  .run()            // EitherT layer -> IO<Either<AppError, User>>
+  .unsafeRun();     // IO layer -> Either<AppError, User>
+
+// Handle the result
+result.fold(
+  error => console.error(`Error: ${error.message}`),
+  user => console.log(`Created user: ${user.name}`)
+);
+```
+
+**Key insight**: Type aliases (`App<A>`) and helper functions make transformer stacks manageable. Without them, the types become unreadable.
 
 ## Why Transformers Are Hard
 
