@@ -392,6 +392,8 @@ let validateUserData data = validation {
 
 Built-in monad (kind of):
 
+**Note:** Java's `Optional` doesn't strictly follow the monad laws. It disallows `null` values inside (throws `NullPointerException`), which breaks some monad equivalences. For example, `Optional.of(null).flatMap(f)` throws rather than propagating empty. It's a practical choice for Java's ecosystem but technically not a true monad.
+
 ```java
 Optional<User> findUser(String id) {
     return Optional.ofNullable(database.findUser(id));
@@ -462,24 +464,26 @@ Try<Config> loadConfig(String path) {
 
 ## React (JavaScript)
 
-Hooks are secretly monadic:
+Hooks have monad-like properties:
+
+**Caveat:** While React hooks share some conceptual similarities with monads (encapsulating state, effects, composability), they don't compose the same way true monads do. `useState` returns `[state, setState]`, not a monad with `flatMap`. Hooks follow React's Rules of Hooks rather than monad laws. The comparison is conceptually useful but shouldn't be taken literally.
 
 ```javascript
-// useState is like State monad
+// useState is conceptually like State monad
 function Counter() {
-  const [count, setCount] = useState(0);  // State<number>
+  const [count, setCount] = useState(0);  // State-like encapsulation
 
   const increment = () => setCount(count + 1);
 
   return <button onClick={increment}>{count}</button>;
 }
 
-// useEffect chains IO operations
+// useEffect chains IO-like operations
 function UserProfile({ userId }) {
   const [user, setUser] = useState(null);
 
   useEffect(() => {
-    // IO monad-like behavior
+    // IO-like behavior: describing effects
     fetchUser(userId)
       .then(setUser)
       .catch(console.error);
@@ -488,7 +492,7 @@ function UserProfile({ userId }) {
   return user ? <div>{user.name}</div> : <div>Loading...</div>;
 }
 
-// Custom hooks compose monadic patterns
+// Custom hooks compose patterns similar to monads
 function useRemoteData(fetchFn) {
   const [data, setData] = useState({ status: 'idle' });
 
@@ -527,18 +531,193 @@ const rootReducer = combineReducers({
   posts: postsReducer
 });
 
-// Thunks are like IO monad
-const fetchUser = (id) => async (dispatch, getState) => {
+// Thunks are IO-like: describing async effects
+const fetchUserAndPosts = (id) => async (dispatch, getState) => {
   dispatch({ type: 'FETCH_USER_START' });
 
   try {
     const user = await api.fetchUser(id);
     dispatch({ type: 'FETCH_USER_SUCCESS', payload: user });
+
+    // Now fetch posts for this user
+    const posts = await api.fetchPosts(user.id);
+    dispatch({ type: 'FETCH_POSTS_SUCCESS', payload: posts });
   } catch (error) {
-    dispatch({ type: 'FETCH_USER_FAILURE', error });
+    dispatch({ type: 'FETCH_FAILURE', error });
   }
 };
 ```
+
+## Kotlin
+
+### Arrow
+
+Functional programming library for Kotlin:
+
+```kotlin
+import arrow.core.*
+import arrow.fx.coroutines.*
+
+// Option (Maybe)
+fun findUser(id: String): Option<User> =
+    database.users.firstOrNull { it.id == id }.toOption()
+
+fun getUserEmail(userId: String): Option<String> =
+    findUser(userId)
+        .flatMap { it.email.toOption() }
+        .map { it.lowercase() }
+
+// Either for errors
+sealed class UserError {
+    object NotFound : UserError()
+    data class InvalidEmail(val email: String) : UserError()
+}
+
+fun validateUser(user: User): Either<UserError, ValidUser> =
+    user.email.validateEmail()
+        .flatMap { email ->
+            user.age.validateAge()
+                .map { age -> ValidUser(user.id, email, age) }
+        }
+
+// Validated for accumulating errors
+import arrow.core.raise.either
+import arrow.core.raise.zipOrAccumulate
+
+fun validateUserData(data: UserData): Either<Nel<String>, ValidUser> = either {
+    zipOrAccumulate(
+        { validateName(data.name).bind() },
+        { validateEmail(data.email).bind() },
+        { validateAge(data.age).bind() }
+    ) { name, email, age ->
+        ValidUser(name, email, age)
+    }
+}
+
+// Effect for async operations (built on coroutines)
+suspend fun fetchUserData(id: String): Either<ApiError, UserData> = either {
+    val user = fetchUser(id).bind()
+    val posts = fetchPosts(user.id).bind()
+    val comments = fetchComments(posts.first().id).bind()
+    UserData(user, posts, comments)
+}
+
+// For-comprehension style with either block
+suspend fun processUser(id: String): Either<AppError, Result> = either {
+    val user = findUser(id).bind()
+    val validated = validateUser(user).bind()
+    val saved = saveUser(validated).bind()
+    Result(saved)
+}
+```
+
+**Key features:**
+- Integrates with Kotlin coroutines
+- Type-safe error handling with Either and Validated
+- Option for null safety beyond Kotlin's built-in nullability
+- Popular in Android development
+
+## Swift
+
+### Result Type
+
+Built-in since Swift 5:
+
+```swift
+// Result is a built-in Either
+enum UserError: Error {
+    case notFound
+    case invalidEmail
+    case networkError(String)
+}
+
+func findUser(id: String) -> Result<User, UserError> {
+    guard let user = database.users.first(where: { $0.id == id }) else {
+        return .failure(.notFound)
+    }
+    return .success(user)
+}
+
+// Chain with flatMap
+func getUserEmail(userId: String) -> Result<String, UserError> {
+    findUser(id: userId)
+        .flatMap { user in
+            guard let email = user.email else {
+                return .failure(.invalidEmail)
+            }
+            return .success(email.lowercased())
+        }
+}
+
+// Compose operations
+func processUser(id: String) -> Result<ProcessedUser, UserError> {
+    findUser(id: id)
+        .flatMap { user in validateUser(user) }
+        .flatMap { validUser in saveUser(validUser) }
+        .map { savedUser in ProcessedUser(savedUser) }
+}
+```
+
+### Combine Framework
+
+Reactive programming with Publishers (like RxJS):
+
+```swift
+import Combine
+
+// Publisher is a monad over time
+func fetchUser(id: String) -> AnyPublisher<User, Error> {
+    URLSession.shared
+        .dataTaskPublisher(for: URL(string: "/api/users/\(id)")!)
+        .map(\.data)
+        .decode(type: User.self, decoder: JSONDecoder())
+        .eraseToAnyPublisher()
+}
+
+// Chain with flatMap
+func loadUserData(id: String) -> AnyPublisher<UserData, Error> {
+    fetchUser(id: id)
+        .flatMap { user in
+            fetchPosts(userId: user.id)
+                .map { posts in UserData(user: user, posts: posts) }
+        }
+        .eraseToAnyPublisher()
+}
+
+// Combine independent operations
+func loadDashboard(userId: String) -> AnyPublisher<Dashboard, Error> {
+    Publishers.Zip(
+        fetchUser(id: userId),
+        fetchSettings(userId: userId)
+    )
+    .map { user, settings in
+        Dashboard(user: user, settings: settings)
+    }
+    .eraseToAnyPublisher()
+}
+
+// Usage with async/await (Swift 5.5+)
+let cancellable = loadUserData(id: "123")
+    .sink(
+        receiveCompletion: { completion in
+            switch completion {
+            case .finished:
+                print("Done")
+            case .failure(let error):
+                print("Error: \(error)")
+            }
+        },
+        receiveValue: { userData in
+            print("User: \(userData.user.name)")
+        }
+    )
+```
+
+**Key features:**
+- Result type built into language
+- Combine for reactive streams
+- Integration with Swift concurrency (async/await)
+- Popular in iOS/macOS development
 
 ## Elm
 
